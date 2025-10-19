@@ -30,17 +30,17 @@ os.makedirs(LOGS_DIR, exist_ok=True)
 # Auto device selection
 # -------------------------
 if torch.cuda.is_available():
-    device = "cuda"  # NVIDIA GPU
-elif hasattr(torch.version, "hip") and torch.version.hip is not None:
-    device = "hip"   # AMD GPU with ROCm
+    device = "cuda"  # NVIDIA GPU or AMD ROCm GPU
+    if hasattr(torch.version, "hip") and torch.version.hip is not None:
+        print("[info] AMD GPU with ROCm detected (using 'cuda' device)")
+    else:
+        print("[info] NVIDIA GPU detected")
 else:
-    device = "cpu"   # CPU fallback
-
-print(f"[info] Using device: {device}")
-
-# Detect Ryzen CPU
-if "ryzen" in platform.processor().lower():
-    print("[info] Ryzen CPU detected.")
+    device = "cpu"
+    if "ryzen" in platform.processor().lower():
+        print("[info] Ryzen CPU detected")
+    else:
+        print("[info] CPU fallback detected")
 
 # -------------------------
 # Environment factory
@@ -75,7 +75,7 @@ def _standard_masked(env, **kwargs) -> MaskablePPO:
         clip_range=0.1,
         ent_coef=0.05,
         max_grad_norm=0.5,
-        device=device,  # Auto-selected device
+        device=device,
         **kwargs,
     )
 
@@ -84,12 +84,28 @@ def _standard_masked(env, **kwargs) -> MaskablePPO:
 # -------------------------
 def train_masked_ppo(
     *,
-    num_envs: int = 4,
+    num_envs: int = 1,
     total_timesteps: int = 50_000_000,
     save_path: Optional[str] = None,
     continue_training: bool = False,
     pretrained_path: Optional[str] = None,
 ):
+    """
+    Train a Maskable PPO agent on BlockGameEnv.
+
+    Parameters:
+        num_envs (int): Number of parallel environments for training.
+        total_timesteps (int): Number of timesteps to train for.
+        save_path (str, optional): Directory to save checkpoints and logs.
+        continue_training (bool): Resume training from pretrained_path if True.
+        pretrained_path (str, optional): Path to a pretrained MaskablePPO model.
+    Side effects:
+        - Automatically selects device (CUDA, ROCm, CPU)
+        - Saves checkpoints and evaluation logs to save_path
+        - Saves final trained model as save_path/final_masked_ppo_model.zip
+    Returns:
+        MaskablePPO: The trained Maskable PPO agent instance.
+    """
     save_dir = save_path or MODELS_DIR
     env = SubprocVecEnv([make_env(i) for i in range(num_envs)])
 
@@ -141,7 +157,7 @@ def train_masked_ppo(
 # -------------------------
 if __name__ == "__main__":
     # Configuration
-    num_envs = 8
+    num_envs = 1
     total_timesteps = 50_000_000
     continue_training = True
 
