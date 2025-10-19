@@ -1,6 +1,8 @@
 import os
 import sys
+import platform
 from typing import Callable, Optional
+import torch
 
 from stable_baselines3.common.monitor import Monitor
 from stable_baselines3.common.callbacks import CheckpointCallback
@@ -24,10 +26,27 @@ LOGS_DIR = os.path.join(SCRIPT_DIR, "logs")
 os.makedirs(MODELS_DIR, exist_ok=True)
 os.makedirs(LOGS_DIR, exist_ok=True)
 
+# -------------------------
+# Auto device selection
+# -------------------------
+if torch.cuda.is_available():
+    device = "cuda"  # NVIDIA GPU
+elif hasattr(torch.version, "hip") and torch.version.hip is not None:
+    device = "hip"   # AMD GPU with ROCm
+else:
+    device = "cpu"   # CPU fallback
 
+print(f"[info] Using device: {device}")
+
+# Detect Ryzen CPU
+if "ryzen" in platform.processor().lower():
+    print("[info] Ryzen CPU detected.")
+
+# -------------------------
+# Environment factory
+# -------------------------
 def make_env(rank: int, seed: int = 0) -> Callable[[], BlockGameEnv]:
     """Factory for SubprocVecEnv."""
-
     def _init():
         env = BlockGameEnv()
         env = Monitor(env)
@@ -36,10 +55,11 @@ def make_env(rank: int, seed: int = 0) -> Callable[[], BlockGameEnv]:
         except TypeError:
             env.seed(seed + rank)
         return env
-
     return _init
 
-
+# -------------------------
+# Maskable PPO model creation
+# -------------------------
 def _standard_masked(env, **kwargs) -> MaskablePPO:
     return MaskablePPO(
         "MultiInputPolicy",
@@ -55,14 +75,17 @@ def _standard_masked(env, **kwargs) -> MaskablePPO:
         clip_range=0.1,
         ent_coef=0.05,
         max_grad_norm=0.5,
+        device=device,  # Auto-selected device
         **kwargs,
     )
 
-
+# -------------------------
+# Training function
+# -------------------------
 def train_masked_ppo(
     *,
     num_envs: int = 4,
-    total_timesteps: int = 1_000_000,
+    total_timesteps: int = 50_000_000,
     save_path: Optional[str] = None,
     continue_training: bool = False,
     pretrained_path: Optional[str] = None,
@@ -70,15 +93,17 @@ def train_masked_ppo(
     save_dir = save_path or MODELS_DIR
     env = SubprocVecEnv([make_env(i) for i in range(num_envs)])
 
+    # Load checkpoint if continuing
     if continue_training and pretrained_path and os.path.isfile(pretrained_path):
         print(f"[masked ppo] Continuing from {pretrained_path}")
-        model = MaskablePPO.load(pretrained_path, env=env)
+        model = MaskablePPO.load(pretrained_path, env=env, device=device)
         model.tensorboard_log = LOGS_DIR
         reset_flag = False
     else:
         model = _standard_masked(env)
         reset_flag = True
 
+    # Checkpoint callback
     checkpoint_cb = CheckpointCallback(
         save_freq=100_000,
         save_path=save_dir,
@@ -87,6 +112,7 @@ def train_masked_ppo(
         save_vecnormalize=True,
     )
 
+    # Evaluation callback
     eval_env = SubprocVecEnv([make_env(0, seed=42)])
     eval_cb = MaskableEvalCallback(
         eval_env,
@@ -97,23 +123,27 @@ def train_masked_ppo(
         render=False,
     )
 
+    # Start training
     model.learn(
         total_timesteps=total_timesteps,
         callback=[checkpoint_cb, eval_cb],
         reset_num_timesteps=reset_flag,
     )
 
+    # Save final model
     final_path = os.path.join(save_dir, "final_masked_ppo_model")
     model.save(final_path)
     print(f"[masked ppo] Training done: {final_path}.zip")
     return model
 
-
+# -------------------------
+# Main execution
+# -------------------------
 if __name__ == "__main__":
     # Configuration
     num_envs = 8
     total_timesteps = 50_000_000
-    continue_training = False
+    continue_training = True
 
     do_train = True
     do_visualize = True
@@ -132,5 +162,5 @@ if __name__ == "__main__":
         render_env = Monitor(render_env)
         model_file = os.path.join(MODELS_DIR, "final_masked_ppo_model.zip")
         print(f"[masked ppo] Loading model from {model_file}")
-        agent = MaskablePPO.load(model_file, env=render_env)
+        agent = MaskablePPO.load(model_file, env=render_env, device=device)
         visualize_agent(render_env, agent, episodes=10, delay=0.2, use_masks=True)
